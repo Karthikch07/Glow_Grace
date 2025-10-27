@@ -1,4 +1,4 @@
-# GlowGrace
+# GlowGrace – Full-Stack Luxury Beauty & Wellness Platform
 
 GlowGrace is a modern eCommerce platform designed for luxury beauty and wellness businesses. It combines traditional online shopping with service booking capabilities, allowing customers to both purchase products and schedule appointments through a single, elegant interface.
 
