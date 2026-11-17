@@ -1,172 +1,80 @@
-import * as client from "openid-client";
 import jwt from "jsonwebtoken";
-import { Strategy, type VerifyFunction } from "openid-client/passport";
-import passport from "passport";
-import session from "express-session";
-import type { Express, RequestHandler } from "express";
-import memoize from "memoizee";
-import connectPg from "connect-pg-simple";
-import { storage } from "./storage";
+import type { Request, RequestHandler } from "express";
+import { env } from "./env";
 
-const isProductionAuth = Boolean(process.env.AUTH_DOMAINS);
-if (!isProductionAuth) {
-  console.warn("AUTH_DOMAINS not provided — using local development authentication");
+/**
+ * Stateless JWT auth. The client stores the token from /api/auth/login,
+ * /api/auth/register or /api/auth/firebase-sync and sends it as
+ * `Authorization: Bearer <token>`.
+ */
+
+export interface AuthUser {
+  id: string;
+  email?: string;
+  isAdmin: boolean;
 }
 
-const getOidcConfig = memoize(
-  async () => {
-    return await client.discovery(
-      new URL(process.env.ISSUER_URL ?? "https://auth.glowgrace.com/oidc"),
-      process.env.CLIENT_ID!
-    );
-  },
-  { maxAge: 3600 * 1000 }
-);
-
-export function getSession() {
-  const sessionTtl = 7 * 24 * 60 * 60 * 1000; 
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: false,
-    ttl: sessionTtl,
-    tableName: "sessions",
-  });
-  return session({
-    secret: process.env.SESSION_SECRET!,
-    store: sessionStore,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: true,
-      maxAge: sessionTtl,
-    },
-  });
-}
-
-function updateUserSession(
-  user: any,
-  tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers
-) {
-  user.claims = tokens.claims();
-  user.access_token = tokens.access_token;
-  user.refresh_token = tokens.refresh_token;
-  user.expires_at = user.claims?.exp;
-}
-
-async function upsertUser(claims: any) {
-  await storage.upsertUser({
-    id: claims["sub"],
-    email: claims["email"],
-    firstName: claims["first_name"],
-    lastName: claims["last_name"],
-    profileImageUrl: claims["profile_image_url"],
-  });
-}
-
-export async function setupAuth(app: Express) {
-  if (!isProductionAuth) {
-    return;
-  }
-
-  app.set("trust proxy", 1);
-  app.use(getSession());
-  app.use(passport.initialize());
-  app.use(passport.session());
-
-  const config = await getOidcConfig();
-
-  const verify: VerifyFunction = async (
-    tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers,
-    verified: passport.AuthenticateCallback
-  ) => {
-    const user = {};
-    updateUserSession(user, tokens);
-    await upsertUser(tokens.claims());
-    verified(null, user);
-  };
-
-  for (const domain of process.env.AUTH_DOMAINS!.split(",")) {
-    const strategy = new Strategy(
-      {
-        name: `glowgrace-auth:${domain}`,
-        config,
-        scope: "openid email profile offline_access",
-        callbackURL: `https://${domain}/api/callback`,
-      },
-      verify,
-    );
-    passport.use(strategy);
-  }
-
-  passport.serializeUser((user: Express.User, cb) => cb(null, user));
-  passport.deserializeUser((user: Express.User, cb) => cb(null, user));
-
-  app.get("/api/login", (req, res, next) => {
-    passport.authenticate(`glowgrace-auth:${req.hostname}`, {
-      prompt: "login consent",
-      scope: ["openid", "email", "profile", "offline_access"],
-    })(req, res, next);
-  });
-
-  app.get("/api/callback", (req, res, next) => {
-    passport.authenticate(`glowgrace-auth:${req.hostname}`, {
-      successReturnToOrRedirect: "/",
-      failureRedirect: "/api/login",
-    })(req, res, next);
-  });
-
-  app.get("/api/logout", (req, res) => {
-    req.logout(() => {
-      res.redirect(
-        client.buildEndSessionUrl(config, {
-          client_id: process.env.CLIENT_ID!,
-          post_logout_redirect_uri: `${req.protocol}://${req.hostname}`,
-        }).href
-      );
-    });
-  });
-}
-
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
-  if (!isProductionAuth) {
-    const auth = (req.headers.authorization || "").split(" ");
-    if (auth[0] === "Bearer" && auth[1]) {
-      try {
-        jwt.verify(auth[1], process.env.SESSION_SECRET || "dev-secret");
-      } catch (e) {
-        return res.status(401).json({ message: "Unauthorized" });
-      }
-      return next();
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      auth?: AuthUser;
     }
-    return res.status(401).json({ message: "Unauthorized" });
   }
+}
 
-  const user = req.user as any;
+const TOKEN_TTL = "7d";
 
-  if (!req.isAuthenticated() || !user.expires_at) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+export function signUserToken(user: { id: string; email?: string | null }): string {
+  return jwt.sign({ sub: user.id, email: user.email ?? undefined }, env.jwtSecret, {
+    expiresIn: TOKEN_TTL,
+    algorithm: "HS256",
+  });
+}
 
-  const now = Math.floor(Date.now() / 1000);
-  if (now <= user.expires_at) {
-    return next();
-  }
+function readBearer(req: Request): string | undefined {
+  const [scheme, token] = (req.headers.authorization || "").split(" ");
+  return scheme === "Bearer" && token ? token : undefined;
+}
 
-  const refreshToken = user.refresh_token;
-  if (!refreshToken) {
-    res.status(401).json({ message: "Unauthorized" });
-    return;
-  }
+export function isAdminEmail(email?: string | null): boolean {
+  return Boolean(email) && env.adminEmails.includes(email!.toLowerCase());
+}
 
+/** Returns the authenticated user, `null` when there is no token, or throws on a bad token. */
+function resolveAuth(req: Request): AuthUser | null {
+  const token = readBearer(req);
+  if (!token) return null;
+  const payload = jwt.verify(token, env.jwtSecret, { algorithms: ["HS256"] }) as jwt.JwtPayload;
+  if (!payload.sub) throw new Error("Token has no subject");
+  const email = typeof payload.email === "string" ? payload.email : undefined;
+  return { id: payload.sub, email, isAdmin: isAdminEmail(email) };
+}
+
+export const requireAuth: RequestHandler = (req, res, next) => {
   try {
-    const config = await getOidcConfig();
-    const tokenResponse = await client.refreshTokenGrant(config, refreshToken);
-    updateUserSession(user, tokenResponse);
-    return next();
-  } catch (error) {
-    res.status(401).json({ message: "Unauthorized" });
-    return;
+    const user = resolveAuth(req);
+    if (!user) return res.status(401).json({ message: "Please sign in to continue." });
+    req.auth = user;
+    next();
+  } catch {
+    res.status(401).json({ message: "Your session has expired. Please sign in again." });
   }
+};
+
+/** Attaches `req.auth` when a valid token is present; never rejects. */
+export const optionalAuth: RequestHandler = (req, _res, next) => {
+  try {
+    req.auth = resolveAuth(req) ?? undefined;
+  } catch {
+    req.auth = undefined;
+  }
+  next();
+};
+
+export const requireAdmin: RequestHandler = (req, res, next) => {
+  requireAuth(req, res, () => {
+    if (!req.auth?.isAdmin) return res.status(403).json({ message: "Admin access required." });
+    next();
+  });
 };

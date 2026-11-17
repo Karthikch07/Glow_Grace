@@ -1,77 +1,56 @@
-import express, { type Request, Response, NextFunction } from "express";
+import "./env"; // must be first: loads .env before other modules read process.env
+import express from "express";
+import { env, isProduction } from "./env";
+import { disconnectMongoDB } from "./mongodb";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
+import { log, serveStatic, setupVite } from "./vite";
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.disable("x-powered-by");
+if (isProduction) app.set("trust proxy", 1);
 
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  next();
+});
+
+// Request log for API calls. Bodies are deliberately not logged: they carry
+// auth tokens, addresses and phone numbers.
 app.use((req, res, next) => {
+  if (!req.path.startsWith("/api")) return next();
   const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
-
-      log(logLine);
-    }
-  });
-
+  res.on("finish", () => log(`${req.method} ${req.path} ${res.statusCode} in ${Date.now() - start}ms`));
   next();
 });
 
 (async () => {
   const server = await registerRoutes(app);
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    res.status(status).json({ message });
-    throw err;
-  });
-
-  
-  
-  
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
 
-  
-  
-  
-  
-  const port = parseInt(process.env.PORT || '5000', 10);
-  const listenOpts: any = {
-    port,
-    host: "0.0.0.0",
+  const listenOpts: { port: number; host?: string; reusePort?: boolean } = { port: env.port };
+  const host = env.host || (process.platform === "win32" ? undefined : "0.0.0.0");
+  if (host) listenOpts.host = host;
+  if (process.platform !== "win32") listenOpts.reusePort = true;
+
+  server.listen(listenOpts, () => log(`serving on port ${env.port}`));
+
+  const shutdown = (signal: string) => {
+    log(`${signal} received, shutting down`);
+    server.close(() => {
+      disconnectMongoDB().finally(() => process.exit(0));
+    });
+    setTimeout(() => process.exit(1), 10_000).unref();
   };
-
-  
-  if (process.platform !== 'win32') {
-    listenOpts.reusePort = true;
-  }
-
-  server.listen(listenOpts, () => {
-    log(`serving on port ${port}`);
-  });
-})();
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+})().catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
+});

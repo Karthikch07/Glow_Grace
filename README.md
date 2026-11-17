@@ -1,4 +1,4 @@
-# GlowGrace – Full-Stack Luxury Beauty & Wellness Platform
+# GlowGrace
 
 GlowGrace is a modern eCommerce platform designed for luxury beauty and wellness businesses. It combines traditional online shopping with service booking capabilities, allowing customers to both purchase products and schedule appointments through a single, elegant interface.
 
@@ -21,4 +21,17 @@ We've implemented UPI QR code payments as the primary payment method. After comp
 
 **Account Management**
 Registered users can view their order history, track upcoming appointments, and manage their profile information. The authentication system uses JWT tokens for security while maintaining a smooth user experience.
+
+**Staff Dashboard (`/admin`)**
+Accounts whose email is listed in `ADMIN_EMAILS` (comma-separated, in `.env`) see an **Admin** link in the header. The dashboard has:
+
+- **Overview**: sales, orders and appointments for the last 30 days compared with the 30 before, a 14-day sales chart, today's appointments, UPI payments waiting to be verified, and low-stock alerts.
+- **Orders**: search and filter, verify UPI references, move orders through placed → confirmed → shipped → delivered, cancel (reserved stock is released), record refunds, and add notes to the order history.
+- **Appointments**: filter by date or status, verify payments, record pay-at-salon payments, confirm, complete or cancel (cancelling frees the slot).
+- **Inventory**: set or adjust stock per product. Prices stay in `shared/catalog.ts`.
+- **Activity**: an audit log of every change staff make, with who made it and when.
+
+Access is enforced by the server on every `/api/admin/*` request; the header link is only a convenience. After changing `ADMIN_EMAILS`, restart the server and sign in again.
+
+Run `npm test` for the unit tests and `npm run check` for the type check.
 

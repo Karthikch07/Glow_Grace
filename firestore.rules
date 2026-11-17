@@ -1,0 +1,418 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Application: GlowGrace Beauty & Wellness Platform
+// Project: GlowGrace
+//
+// This security rules file assumes the following document data structures:
+//
+// 1. Collection: services
+//    Document ID: string (e.g. "service_1", auto-id)
+//    Fields:
+//      - name: string (required, 1-100 chars)
+//      - category: string (required, 1-50 chars; e.g. "Spa", "Hair Salon", "Barbershop", "Fitness", "MedSpa", "Beauty Studio")
+//      - description: string (required, 1-2000 chars)
+//      - duration: string (required, 1-50 chars)
+//      - price: number (required, >= 0, <= 1000000)
+//      - image: string (required, 1-1000 chars)
+//      - featured: bool (optional)
+//      - rating: number (optional, 0.0 - 5.0)
+//      - createdAt: timestamp (optional)
+//      - updatedAt: timestamp (optional)
+//
+// 2. Collection: products
+//    Document ID: string (e.g. "product_1", auto-id)
+//    Fields:
+//      - name: string (required, 1-150 chars)
+//      - brand: string (required, 1-100 chars)
+//      - category: string (required, 1-50 chars; e.g. "Skincare", "Haircare", "Body Care", "Wellness", "Cosmetics")
+//      - description: string (required, 1-3000 chars)
+//      - price: number (required, >= 0, <= 1000000)
+//      - originalPrice: number (optional, >= 0, <= 1000000)
+//      - image: string (required, 1-1000 chars)
+//      - rating: number (optional, 0.0 - 5.0)
+//      - reviews: int (optional, >= 0, <= 1000000)
+//      - stock: int (optional, >= 0, <= 100000)
+//      - createdAt: timestamp (optional)
+//      - updatedAt: timestamp (optional)
+//
+// 3. Collection: bookings
+//    Document ID: auto-generated string
+//    Fields:
+//      - userId: string (required, 1-128 chars, immutable, matches request.auth.uid)
+//      - userName: string (required, 1-100 chars)
+//      - userEmail: string (required, valid email, <= 150 chars)
+//      - userPhone: string (optional, <= 30 chars)
+//      - serviceId: string (required, 1-100 chars, immutable)
+//      - serviceName: string (required, 1-150 chars)
+//      - stylistId: string (required, 1-100 chars)
+//      - stylistName: string (required, 1-100 chars)
+//      - date: string (required, 1-50 chars)
+//      - time: string (required, 1-30 chars)
+//      - price: number (required, >= 0, <= 1000000)
+//      - status: string (required, in ['pending', 'confirmed', 'completed', 'cancelled'])
+//      - createdAt: timestamp (optional, immutable)
+//      - updatedAt: timestamp (optional)
+//
+// 4. Collection: orders
+//    Document ID: auto-generated string
+//    Fields:
+//      - userId: string (required, 1-128 chars, immutable, matches request.auth.uid)
+//      - userEmail: string (required, valid email, <= 150 chars)
+//      - userName: string (required, 1-100 chars)
+//      - items: list (required, 1-50 item maps)
+//      - totalAmount: number (required, >= 0, <= 10000000)
+//      - shippingAddress: string (required, 1-500 chars)
+//      - paymentStatus: string (required, in ['paid', 'pending', 'cod', 'failed', 'refunded'])
+//      - status: string (optional, in ['pending', 'processing', 'shipped', 'delivered', 'cancelled'])
+//      - createdAt: timestamp (optional, immutable)
+//      - updatedAt: timestamp (optional)
+//
+// 5. Collection: users
+//    Document ID: string (strictly matches request.auth.uid)
+//    Fields:
+//      - uid: string (required, 1-128 chars, immutable, matches document ID & auth.uid)
+//      - email: string | null (optional, valid email, <= 150 chars)
+//      - phoneNumber: string | null (optional, <= 30 chars)
+//      - displayName: string | null (optional, <= 100 chars)
+//      - photoURL: string | null (optional, <= 1000 chars)
+//      - provider: string (optional, in ['google', 'password', 'phone'])
+//      - role: string (optional, in ['client', 'customer', 'user']; admin cannot be self-assigned)
+//      - createdAt: timestamp (optional, immutable)
+//      - updatedAt: timestamp (optional)
+//
+// 6. Collection: reviews
+//    Document ID: auto-generated string
+//    Fields:
+//      - userId: string (required, 1-128 chars, immutable, matches request.auth.uid)
+//      - userName: string (required, 1-100 chars)
+//      - rating: number (required, 1.0 - 5.0)
+//      - comment: string (required, 1-2000 chars)
+//      - serviceId: string (optional, 1-100 chars; at least serviceId or productId required)
+//      - productId: string (optional, 1-100 chars; at least serviceId or productId required)
+//      - createdAt: timestamp (optional, immutable)
+//      - updatedAt: timestamp (optional)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the request is from an authenticated user
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user matches the specified userId
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if the user has administrative privileges derived strictly
+    // from trusted Auth claims or verified administrative domains
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true ||
+        request.auth.token.role == "admin" ||
+        (
+          request.auth.token.email is string &&
+          request.auth.token.email_verified == true &&
+          (
+            request.auth.token.email.matches(".*@glowgrace\\.com$") ||
+            request.auth.token.email == "admin@glowgrace.com" ||
+            request.auth.token.email == "admin@glowgrace.firebaseapp.com"
+          )
+        )
+      );
+    }
+
+    // Check if the document contains all required fields
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Check that the document contains only allowed fields (Strict Schema Enforcement)
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Ensure specified fields cannot be altered on update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate email format
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Validate numeric range
+    function isValidNumber(val, minVal, maxVal) {
+      return (val is int || val is float) && val >= minVal && val <= maxVal;
+    }
+
+    // ===============================================================
+    // Domain Validators (Applied to both create and update)
+    // ===============================================================
+
+    // 1. Service Validator
+    function isValidService(data) {
+      return hasOnlyAllowedFields([
+        'name', 'category', 'description', 'duration',
+        'price', 'image', 'featured', 'rating',
+        'createdAt', 'updatedAt'
+      ]) &&
+      hasRequiredFields(['name', 'category', 'description', 'duration', 'price', 'image']) &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+      data.description is string && data.description.size() >= 1 && data.description.size() <= 2000 &&
+      data.duration is string && data.duration.size() >= 1 && data.duration.size() <= 50 &&
+      isValidNumber(data.price, 0, 1000000) &&
+      data.image is string && data.image.size() >= 1 && data.image.size() <= 1000 &&
+      (!('featured' in data) || data.featured is bool) &&
+      (!('rating' in data) || isValidNumber(data.rating, 0, 5)) &&
+      (!('createdAt' in data) || data.createdAt is timestamp) &&
+      (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // 2. Product Validator
+    function isValidProduct(data) {
+      return hasOnlyAllowedFields([
+        'name', 'brand', 'category', 'description',
+        'price', 'originalPrice', 'image', 'rating',
+        'reviews', 'stock', 'createdAt', 'updatedAt'
+      ]) &&
+      hasRequiredFields(['name', 'brand', 'category', 'description', 'price', 'image']) &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+      data.brand is string && data.brand.size() >= 1 && data.brand.size() <= 100 &&
+      data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+      data.description is string && data.description.size() >= 1 && data.description.size() <= 3000 &&
+      isValidNumber(data.price, 0, 1000000) &&
+      (!('originalPrice' in data) || isValidNumber(data.originalPrice, 0, 1000000)) &&
+      data.image is string && data.image.size() >= 1 && data.image.size() <= 1000 &&
+      (!('rating' in data) || isValidNumber(data.rating, 0, 5)) &&
+      (!('reviews' in data) || (data.reviews is int && data.reviews >= 0 && data.reviews <= 1000000)) &&
+      (!('stock' in data) || (data.stock is int && data.stock >= 0 && data.stock <= 100000)) &&
+      (!('createdAt' in data) || data.createdAt is timestamp) &&
+      (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // 3. Booking Validator
+    function isValidBooking(data) {
+      return hasOnlyAllowedFields([
+        'userId', 'userName', 'userEmail', 'userPhone',
+        'serviceId', 'serviceName', 'stylistId', 'stylistName',
+        'date', 'time', 'price', 'status',
+        'createdAt', 'updatedAt'
+      ]) &&
+      hasRequiredFields([
+        'userId', 'userName', 'userEmail',
+        'serviceId', 'serviceName', 'stylistId', 'stylistName',
+        'date', 'time', 'price', 'status'
+      ]) &&
+      data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+      data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100 &&
+      data.userEmail is string && isValidEmail(data.userEmail) && data.userEmail.size() <= 150 &&
+      (!('userPhone' in data) || data.userPhone == null || (data.userPhone is string && data.userPhone.size() <= 30)) &&
+      data.serviceId is string && data.serviceId.size() >= 1 && data.serviceId.size() <= 100 &&
+      data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 150 &&
+      data.stylistId is string && data.stylistId.size() >= 1 && data.stylistId.size() <= 100 &&
+      data.stylistName is string && data.stylistName.size() >= 1 && data.stylistName.size() <= 100 &&
+      data.date is string && data.date.size() >= 1 && data.date.size() <= 50 &&
+      data.time is string && data.time.size() >= 1 && data.time.size() <= 30 &&
+      isValidNumber(data.price, 0, 1000000) &&
+      data.status in ['pending', 'confirmed', 'completed', 'cancelled'] &&
+      (!('createdAt' in data) || data.createdAt is timestamp) &&
+      (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // 4. Order Validator
+    function isValidOrder(data) {
+      return hasOnlyAllowedFields([
+        'userId', 'userEmail', 'userName', 'items',
+        'totalAmount', 'shippingAddress', 'paymentStatus',
+        'status', 'createdAt', 'updatedAt'
+      ]) &&
+      hasRequiredFields([
+        'userId', 'userEmail', 'userName', 'items',
+        'totalAmount', 'shippingAddress', 'paymentStatus'
+      ]) &&
+      data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+      data.userEmail is string && isValidEmail(data.userEmail) && data.userEmail.size() <= 150 &&
+      data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100 &&
+      data.items is list && data.items.size() >= 1 && data.items.size() <= 50 &&
+      isValidNumber(data.totalAmount, 0, 10000000) &&
+      data.shippingAddress is string && data.shippingAddress.size() >= 1 && data.shippingAddress.size() <= 500 &&
+      data.paymentStatus in ['paid', 'pending', 'cod', 'failed', 'refunded'] &&
+      (!('status' in data) || data.status in ['pending', 'processing', 'shipped', 'delivered', 'cancelled']) &&
+      (!('createdAt' in data) || data.createdAt is timestamp) &&
+      (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // 5. User Profile Validator
+    function isValidUser(data) {
+      return hasOnlyAllowedFields([
+        'uid', 'email', 'phoneNumber', 'displayName',
+        'photoURL', 'provider', 'role',
+        'createdAt', 'updatedAt'
+      ]) &&
+      hasRequiredFields(['uid']) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+      (!('email' in data) || data.email == null || (data.email is string && isValidEmail(data.email) && data.email.size() <= 150)) &&
+      (!('phoneNumber' in data) || data.phoneNumber == null || (data.phoneNumber is string && data.phoneNumber.size() <= 30)) &&
+      (!('displayName' in data) || data.displayName == null || (data.displayName is string && data.displayName.size() <= 100)) &&
+      (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1000)) &&
+      (!('provider' in data) || data.provider == null || (data.provider is string && data.provider in ['google', 'password', 'phone'])) &&
+      (!('role' in data) || (data.role is string && data.role in ['client', 'customer', 'user'])) &&
+      (!('createdAt' in data) || data.createdAt is timestamp) &&
+      (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // 6. Review Validator
+    function isValidReview(data) {
+      return hasOnlyAllowedFields([
+        'userId', 'userName', 'rating', 'comment',
+        'serviceId', 'productId',
+        'createdAt', 'updatedAt'
+      ]) &&
+      hasRequiredFields(['userId', 'userName', 'rating', 'comment']) &&
+      data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+      data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100 &&
+      isValidNumber(data.rating, 1, 5) &&
+      data.comment is string && data.comment.size() >= 1 && data.comment.size() <= 2000 &&
+      (('serviceId' in data && data.serviceId is string && data.serviceId.size() >= 1 && data.serviceId.size() <= 100) ||
+       ('productId' in data && data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 100)) &&
+      (!('serviceId' in data) || (data.serviceId is string && data.serviceId.size() <= 100)) &&
+      (!('productId' in data) || (data.productId is string && data.productId.size() <= 100)) &&
+      (!('createdAt' in data) || data.createdAt is timestamp) &&
+      (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // 1. Services: Public catalog browse; administrative curation
+    match /services/{serviceId} {
+      allow read: if true;
+      allow create: if isAdmin() && isValidService(request.resource.data);
+      allow update: if isAdmin() && isValidService(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // 2. Products: Public catalog browse; administrative curation
+    match /products/{productId} {
+      allow read: if true;
+      allow create: if isAdmin() && isValidProduct(request.resource.data);
+      allow update: if isAdmin() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // 3. Bookings: User appointment scheduling and management
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        isValidBooking(request.resource.data) &&
+        (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() &&
+        isValidBooking(request.resource.data) &&
+        (
+          isAdmin() ||
+          (
+            resource.data.userId == request.auth.uid &&
+            request.resource.data.userId == resource.data.userId &&
+            areImmutableFieldsUnchanged(['userId', 'serviceId', 'createdAt'])
+          )
+        );
+      allow delete: if isAdmin();
+    }
+
+    // 4. Orders: Ecommerce product purchases
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        isValidOrder(request.resource.data) &&
+        (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() &&
+        isValidOrder(request.resource.data) &&
+        (
+          isAdmin() ||
+          (
+            resource.data.userId == request.auth.uid &&
+            request.resource.data.userId == resource.data.userId &&
+            areImmutableFieldsUnchanged(['userId', 'items', 'totalAmount', 'createdAt'])
+          )
+        );
+      allow delete: if isAdmin();
+    }
+
+    // 5. Users: User profile documents (Strict PII lockdown)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId || isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+        isValidUser(request.resource.data) &&
+        (
+          isAdmin() ||
+          (
+            request.auth.uid == userId &&
+            request.resource.data.uid == userId &&
+            (!('role' in request.resource.data) || request.resource.data.role != 'admin')
+          )
+        );
+      allow update: if isAuthenticated() &&
+        isValidUser(request.resource.data) &&
+        (
+          isAdmin() ||
+          (
+            request.auth.uid == userId &&
+            request.resource.data.uid == resource.data.uid &&
+            areImmutableFieldsUnchanged(['uid', 'createdAt']) &&
+            (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
+          )
+        );
+      allow delete: if isAuthenticated() && (
+        request.auth.uid == userId || isAdmin()
+      );
+    }
+
+    // 6. Reviews: Ratings and testimonials
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isAuthenticated() &&
+        isValidReview(request.resource.data) &&
+        (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() &&
+        isValidReview(request.resource.data) &&
+        (
+          isAdmin() ||
+          (
+            resource.data.userId == request.auth.uid &&
+            request.resource.data.userId == resource.data.userId &&
+            areImmutableFieldsUnchanged(['userId', 'serviceId', 'productId', 'createdAt'])
+          )
+        );
+      allow delete: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || isAdmin()
+      );
+    }
+
+    // Default Deny: All other paths and subcollections strictly disallowed
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

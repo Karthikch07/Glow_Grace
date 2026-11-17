@@ -29,7 +29,7 @@ export function ServiceCard({
   const [, navigate] = useLocation();
 
   return (
-    <Card className="overflow-hidden group cursor-pointer hover-elevate transition-all duration-300 hover:-translate-y-2" data-testid={`card-service-${name.toLowerCase().replace(/\s+/g, '-')}`}>
+    <Card className="overflow-hidden group cursor-pointer hover-elevate transition-all duration-300 hover:-translate-y-2 active:scale-[0.98] select-none" data-testid={`card-service-${name.toLowerCase().replace(/\s+/g, '-')}`}>
       <div className="aspect-[4/3] overflow-hidden relative">
         <img
           src={image}

@@ -24,6 +24,9 @@ export async function setupVite(app: Express, server: Server) {
     middlewareMode: true,
     hmr: { server },
     allowedHosts: true as const,
+    // Keep vite.config's fs rules, and allow the project root so files in
+    // attached_assets/ (outside the client/ root) are served in development.
+    fs: { ...viteConfig.server?.fs, allow: [path.resolve(import.meta.dirname, "..")] },
   };
 
   const vite = await createViteServer({

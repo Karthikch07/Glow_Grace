@@ -27,7 +27,7 @@ export function CategorySection() {
           {categories.map((category) => (
             <Card
               key={category.name}
-              className="p-6 hover-elevate cursor-pointer transition-all duration-300 hover:-translate-y-1 text-center"
+              className="p-6 hover-elevate cursor-pointer transition-all duration-300 hover:-translate-y-1 active:scale-95 text-center select-none"
               onClick={() => console.log('Category clicked:', category.name)}
               data-testid={`card-category-${category.name.toLowerCase().replace(/\s+/g, '-')}`}
             >

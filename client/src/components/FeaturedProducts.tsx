@@ -1,12 +1,10 @@
 import { ProductCard } from "./ProductCard";
 import { allProducts } from "@/lib/catalog";
-import { useCart } from "@/lib/cart";
 
 
 const featuredProducts = allProducts.slice(0, 4);
 
 export function FeaturedProducts() {
-  const { addToCart } = useCart();
 
   return (
     <section className="py-16 md:py-24">
@@ -23,8 +21,8 @@ export function FeaturedProducts() {
         </div>
 
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {featuredProducts.map((product, index) => (
-            <ProductCard key={index} {...product} onAddToCart={() => addToCart(product)} />
+          {featuredProducts.map((product) => (
+            <ProductCard key={product.id} {...product} />
           ))}
         </div>
       </div>

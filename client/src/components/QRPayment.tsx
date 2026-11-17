@@ -14,6 +14,15 @@ interface QRPaymentProps {
   amount: number;
   title?: string;
   description?: string;
+  /** Order/booking number to show for the payment note. */
+  reference?: string;
+  /** upi:// deep link that opens the customer's UPI app with the amount filled in. */
+  upiLink?: string | null;
+  /**
+   * When set, the UPI reference (UTR) is required and sent here; the dialog
+   * shows any error it throws and reports "received" rather than "verified".
+   */
+  onSubmitReference?: (transactionId: string) => Promise<void>;
 }
 
 export default function QRPayment({
@@ -22,8 +31,13 @@ export default function QRPayment({
   onSuccess,
   amount,
   title = "Complete Payment",
-  description = "Scan the QR code or upload payment screenshot to complete your transaction"
+  description = "Scan the QR code or upload payment screenshot to complete your transaction",
+  reference,
+  upiLink,
+  onSubmitReference,
 }: QRPaymentProps) {
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const referenceMode = Boolean(onSubmitReference);
   const [step, setStep] = useState<'qr' | 'upload' | 'success'>('qr');
   const [transactionId, setTransactionId] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -35,6 +49,7 @@ export default function QRPayment({
       setTransactionId('');
       setUploadedFile(null);
       setProcessing(false);
+      setSubmitError(null);
     }
   }, [isOpen]);
 
@@ -44,7 +59,23 @@ export default function QRPayment({
     }
   };
 
-  const handleVerifyPayment = () => {
+  const handleVerifyPayment = async () => {
+    if (onSubmitReference) {
+      if (!transactionId.trim()) return;
+      setProcessing(true);
+      setSubmitError(null);
+      try {
+        await onSubmitReference(transactionId.trim());
+        setStep("success");
+        setTimeout(() => onSuccess(), 1500);
+      } catch (e: any) {
+        setSubmitError(e?.message || "We couldn't save your payment reference. Please try again.");
+      } finally {
+        setProcessing(false);
+      }
+      return;
+    }
+
     if (!transactionId && !uploadedFile) {
       return;
     }
@@ -63,7 +94,7 @@ export default function QRPayment({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         {step === 'qr' && (
           <>
             <DialogHeader>
@@ -74,20 +105,23 @@ export default function QRPayment({
               <DialogDescription>{description}</DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-6 py-4">
-              {/* Amount Display */}
+            <div className="space-y-4 py-4">
               <div className="bg-primary/10 rounded-lg p-4 text-center">
                 <div className="text-sm text-muted-foreground mb-1">Amount to Pay</div>
                 <div className="text-3xl font-bold text-primary">{formatCurrency(amount)}</div>
+                {reference && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Add <span className="font-mono font-semibold text-foreground">{reference}</span> in the payment note
+                  </div>
+                )}
               </div>
 
-              {/* QR Code */}
               <div className="flex flex-col items-center space-y-3">
-                <div className="bg-white p-4 rounded-lg shadow-md">
+                <div className="bg-white p-3 rounded-lg shadow-md">
                   <img 
                     src={qrCodeImage} 
                     alt="Payment QR Code" 
-                    className="w-64 h-64 object-contain"
+                    className="w-48 h-48 sm:w-56 sm:h-56 object-contain"
                   />
                 </div>
                 <p className="text-sm text-center text-muted-foreground">
@@ -96,29 +130,33 @@ export default function QRPayment({
                 </p>
               </div>
 
-              {/* Payment Apps */}
-              <div className="flex justify-center gap-4 pb-2">
+              <div className="flex justify-center gap-3 flex-wrap">
                 <div className="flex flex-col items-center gap-1">
-                  <div className="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center text-xl">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-purple-100 rounded-full flex items-center justify-center text-lg sm:text-xl">
                     📱
                   </div>
                   <span className="text-xs">PhonePe</span>
                 </div>
                 <div className="flex flex-col items-center gap-1">
-                  <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-xl">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-blue-100 rounded-full flex items-center justify-center text-lg sm:text-xl">
                     💳
                   </div>
                   <span className="text-xs">Google Pay</span>
                 </div>
                 <div className="flex flex-col items-center gap-1">
-                  <div className="w-12 h-12 bg-cyan-100 rounded-full flex items-center justify-center text-xl">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-cyan-100 rounded-full flex items-center justify-center text-lg sm:text-xl">
                     💰
                   </div>
                   <span className="text-xs">Paytm</span>
                 </div>
               </div>
 
-              <div className="border-t pt-4">
+              <div className="border-t pt-3 space-y-2">
+                {upiLink && (
+                  <Button asChild variant="outline" className="w-full sm:hidden">
+                    <a href={upiLink}>Open UPI app</a>
+                  </Button>
+                )}
                 <Button 
                   className="w-full" 
                   onClick={() => setStep('upload')}
@@ -138,24 +176,29 @@ export default function QRPayment({
                 Verify Payment
               </DialogTitle>
               <DialogDescription>
-                Enter your transaction ID or upload payment screenshot
+                {referenceMode
+                  ? "Enter the 12-digit UPI reference number (UTR) shown in your payment app"
+                  : "Enter your transaction ID or upload payment screenshot"}
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4 py-4">
               {/* Transaction ID */}
               <div className="space-y-2">
-                <Label htmlFor="transactionId">Transaction ID (Optional)</Label>
+                <Label htmlFor="transactionId">{referenceMode ? "UPI reference number (UTR)" : "Transaction ID (Optional)"}</Label>
                 <Input
                   id="transactionId"
                   placeholder="e.g., 123456789012"
                   value={transactionId}
-                  onChange={(e) => setTransactionId(e.target.value)}
+                  onChange={(e) => setTransactionId(e.target.value.replace(/s/g, ""))}
+                  inputMode={referenceMode ? "numeric" : undefined}
+                  maxLength={35}
                 />
+                {submitError && <p className="text-sm text-destructive">{submitError}</p>}
               </div>
 
               {/* File Upload */}
-              <div className="space-y-2">
+              {!referenceMode && <div className="space-y-2">
                 <Label htmlFor="screenshot">Payment Screenshot (Optional)</Label>
                 <div className="border-2 border-dashed rounded-lg p-6 text-center hover:border-primary/50 transition-colors">
                   <input
@@ -181,7 +224,7 @@ export default function QRPayment({
                     )}
                   </label>
                 </div>
-              </div>
+              </div>}
 
               <div className="bg-muted/50 rounded-lg p-3 text-sm text-muted-foreground">
                 💡 Tip: Providing transaction details helps us verify your payment faster
@@ -198,10 +241,10 @@ export default function QRPayment({
                 </Button>
                 <Button 
                   onClick={handleVerifyPayment}
-                  disabled={!transactionId && !uploadedFile || processing}
+                  disabled={(referenceMode ? !transactionId.trim() : !transactionId && !uploadedFile) || processing}
                   className="flex-1"
                 >
-                  {processing ? 'Verifying...' : 'Verify Payment'}
+                  {processing ? (referenceMode ? "Submitting..." : "Verifying...") : referenceMode ? "Submit reference" : "Verify Payment"}
                 </Button>
               </div>
             </div>
@@ -211,7 +254,7 @@ export default function QRPayment({
         {step === 'success' && (
           <>
             <DialogHeader>
-              <DialogTitle>Payment Successful!</DialogTitle>
+              <DialogTitle>{referenceMode ? "Payment reference received" : "Payment Successful!"}</DialogTitle>
             </DialogHeader>
 
             <div className="py-8 text-center space-y-4">
@@ -220,9 +263,11 @@ export default function QRPayment({
               </div>
               
               <div className="space-y-2">
-                <h3 className="text-2xl font-bold text-green-600">Payment Verified!</h3>
+                <h3 className="text-2xl font-bold text-green-600">{referenceMode ? "Thank you!" : "Payment Verified!"}</h3>
                 <p className="text-muted-foreground">
-                  Your payment of {formatCurrency(amount)} has been confirmed
+                  {referenceMode
+                    ? `We'll match your payment of ${formatCurrency(amount)} and confirm your order shortly.`
+                    : `Your payment of ${formatCurrency(amount)} has been confirmed`}
                 </p>
               </div>
 

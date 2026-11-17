@@ -4,14 +4,12 @@ import { Footer } from "@/components/Footer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search } from "lucide-react";
-import { useCart } from "../lib/cart";
 import { allProducts, productCategories } from "@/lib/catalog";
 
 export default function Products() {
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [searchQuery, setSearchQuery] = useState("");
 
-  const { addToCart } = useCart();
 
   const filteredProducts = allProducts.filter(product => {
     const q = searchQuery.trim().toLowerCase();
@@ -62,8 +60,8 @@ export default function Products() {
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {filteredProducts.map((product, index) => (
-              <ProductCard key={index} {...product} onAddToCart={() => addToCart(product)} />
+            {filteredProducts.map((product) => (
+              <ProductCard key={product.id} {...product} />
             ))}
           </div>
         </div>
