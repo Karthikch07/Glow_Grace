@@ -2,12 +2,14 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { 
   getAuth, 
   GoogleAuthProvider, 
-  signInWithPopup, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   signInWithPhoneNumber,
   RecaptchaVerifier,
-  signOut as fbSignOut, 
+  signOut as fbSignOut,
   updateProfile,
   sendPasswordResetEmail,
   onAuthStateChanged,
@@ -41,7 +43,10 @@ export interface FirebaseConfig {
   appId: string;
 }
 
+/** Firebase project ID. Google never allows a project ID to be renamed, so customers should not see it. */
 export const TARGET_PROJECT_ID = "mediblog-n0a10";
+/** The name customers see. */
+export const APP_NAME = "GlowGrace";
 
 // Production/default configuration built directly into the codebase
 export const DEFAULT_FIREBASE_CONFIG: FirebaseConfig = {
@@ -128,12 +133,14 @@ export {
   auth, 
   db,
   googleProvider, 
-  signInWithPopup, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   signInWithPhoneNumber,
   RecaptchaVerifier,
-  fbSignOut, 
+  fbSignOut,
   updateProfile, 
   sendPasswordResetEmail, 
   onAuthStateChanged,

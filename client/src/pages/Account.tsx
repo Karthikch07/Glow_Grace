@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useAuth, clearPhoneRecaptcha } from "@/lib/auth";
-import { saveFirebaseConfig, TARGET_PROJECT_ID, type FirebaseConfig } from "@/lib/firebase";
+import { APP_NAME, saveFirebaseConfig, TARGET_PROJECT_ID, type FirebaseConfig } from "@/lib/firebase";
 import { seedFirestoreCatalog } from "@/lib/firestore";
 import { 
   Sparkles, 
@@ -405,7 +405,7 @@ export default function Account() {
                   </p>
                   <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-muted/60 border border-border/50 text-[11px] text-muted-foreground">
                     <Database className="w-3 h-3 text-primary" />
-                    <span>Project: <strong className="text-foreground font-semibold">{TARGET_PROJECT_ID}</strong></span>
+                    <span>Secure sign-in for <strong className="text-foreground font-semibold">{APP_NAME}</strong></span>
                   </div>
                 </div>
 
@@ -915,9 +915,9 @@ export default function Account() {
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-muted-foreground">
-                    <span>Firebase Project</span>
-                    <span className="font-mono text-[11px] text-foreground font-semibold">
-                      {TARGET_PROJECT_ID}
+                    <span>Account</span>
+                    <span className="text-[11px] text-foreground font-semibold">
+                      {APP_NAME}
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-muted-foreground">
@@ -963,7 +963,7 @@ export default function Account() {
                 <div>
                   <h3 className="font-semibold text-lg">Firebase Web App Setup</h3>
                   <p className="text-xs text-muted-foreground">
-                    Connect project <strong className="text-foreground">{TARGET_PROJECT_ID}</strong> (Auth &amp; Firestore)
+                    Connect {APP_NAME} to Firebase (Auth &amp; Firestore)
                   </p>
                 </div>
               </div>

@@ -1,9 +1,11 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { 
   auth, 
   googleProvider, 
-  signInWithPopup, 
-  signInWithEmailAndPassword, 
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithEmailAndPassword,
   createUserWithEmailAndPassword, 
   signInWithPhoneNumber,
   RecaptchaVerifier,
@@ -17,6 +19,7 @@ import {
   type ConfirmationResult
 } from "./firebase";
 import { doc, setDoc, db, serverTimestamp } from "./firebase";
+import { toast } from "@/hooks/use-toast";
 
 export interface User {
   id: string;
@@ -60,6 +63,37 @@ const defaultAuthContext: AuthContextType = {
 
 const AuthContext = createContext<AuthContextType>(defaultAuthContext);
 
+interface SyncInput {
+  uid: string;
+  email?: string;
+  phoneNumber?: string;
+  displayName?: string;
+  photoURL?: string;
+  provider?: "google" | "password" | "phone";
+}
+
+/** Plain-language messages for the Google sign-in errors customers can actually hit. */
+function googleErrorMessage(code: string | undefined): string {
+  switch (code) {
+    case "auth/popup-closed-by-user":
+    case "auth/cancelled-popup-request":
+    case "auth/user-cancelled":
+      return "Google sign-in was cancelled.";
+    case "auth/network-request-failed":
+      return "Couldn't reach Google. Check your connection and try again.";
+    case "auth/unauthorized-domain":
+      return `Google sign-in isn't enabled for ${window.location.hostname} yet. Use email or phone, or open the site from its main address.`;
+    case "auth/account-exists-with-different-credential":
+      return "This email already has an account with a different sign-in method. Sign in with email instead.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Please wait a minute and try again.";
+    case "auth/user-disabled":
+      return "This account has been disabled.";
+    default:
+      return "Google sign-in didn't work. Please try again, or use email or phone.";
+  }
+}
+
 const CURRENT_KEY = "gg_current_user";
 const TOKEN_KEY = "gg_auth_token";
 
@@ -67,7 +101,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(CURRENT_KEY) || "null");
-      if (saved && (saved.email === "alex.demo@gmail.com" || saved.uid?.startsWith("google_demo_"))) {
+      // Drop placeholder sessions older builds created when Google sign-in failed.
+      if (saved && (saved.email === "alex.demo@gmail.com" || saved.email === "member@glamgrid.com" || /^google_(demo|mobile|user)_/.test(saved.uid ?? ""))) {
         localStorage.removeItem(CURRENT_KEY);
         localStorage.removeItem(TOKEN_KEY);
         return null;
@@ -80,30 +115,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const [loading, setLoading] = useState(true);
 
+  // A sign-in triggers both the sign-in handler and onAuthStateChanged; share one sync per user.
+  const syncing = useRef(new Map<string, Promise<User>>());
+
+  function syncBackendUser(userData: SyncInput): Promise<User> {
+    const pending = syncing.current.get(userData.uid);
+    if (pending) return pending;
+    const p = doSyncBackendUser(userData).finally(() => syncing.current.delete(userData.uid));
+    syncing.current.set(userData.uid, p);
+    return p;
+  }
+
   // Sync user with Firestore & Backend
-  async function syncBackendUser(userData: {
-    uid: string;
-    email?: string;
-    phoneNumber?: string;
-    displayName?: string;
-    photoURL?: string;
-    provider?: "google" | "password" | "phone";
-  }): Promise<User> {
-    // 1. Save to Firestore Users collection
-    try {
-      if (db && userData.uid) {
-        await setDoc(doc(db, "users", userData.uid), {
-          uid: userData.uid,
-          email: userData.email || null,
-          phoneNumber: userData.phoneNumber || null,
-          displayName: userData.displayName || null,
-          photoURL: userData.photoURL || null,
-          provider: userData.provider || "password",
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      }
-    } catch (e) {
-      console.warn("Firestore user profile sync error:", e);
+  async function doSyncBackendUser(userData: SyncInput): Promise<User> {
+    // 1. Mirror the profile to Firestore in the background. Never await it: when Firestore is
+    // unreachable or not enabled, the write waits forever for a server acknowledgement and
+    // would hold up sign-in. MongoDB (step 2) is the source of truth.
+    if (db && userData.uid) {
+      setDoc(doc(db, "users", userData.uid), {
+        uid: userData.uid,
+        email: userData.email || null,
+        phoneNumber: userData.phoneNumber || null,
+        displayName: userData.displayName || null,
+        photoURL: userData.photoURL || null,
+        provider: userData.provider || "password",
+        updatedAt: serverTimestamp(),
+      }, { merge: true }).catch((e) => console.warn("Firestore user profile sync error:", e));
     }
 
     // 2. Sync with local backend
@@ -177,56 +214,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => unsubscribe();
   }, []);
 
-  // Google Sign-In (Real Google OAuth via Firebase with seamless local fallback)
+  // Errors from a redirect sign-in (used when the popup is blocked) arrive after the page reloads.
+  useEffect(() => {
+    getRedirectResult(auth).catch((error: any) => {
+      console.warn("Google redirect sign-in:", error?.code, error?.message);
+      toast({ title: "Couldn't sign in with Google", description: googleErrorMessage(error?.code), variant: "destructive" });
+    });
+  }, []);
+
+  // Google Sign-In. Opens Google's popup; if the browser blocks popups, goes to Google's page instead.
   async function handleGoogleSignIn(): Promise<User> {
+    if (!isFirebaseConfigured()) {
+      throw new Error("Google sign-in isn't set up on this site yet. Please use email or phone.");
+    }
+    let result;
     try {
-      if (isFirebaseConfigured()) {
-        const result = await signInWithPopup(auth, googleProvider);
-        const fbUser = result.user;
-        return await syncBackendUser({
-          uid: fbUser.uid,
-          email: fbUser.email || "",
-          displayName: fbUser.displayName || "",
-          photoURL: fbUser.photoURL || undefined,
-          provider: "google",
-        });
-      }
+      result = await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
       console.warn("Firebase Google Auth:", error?.code, error?.message);
-
-      if (error.code === "auth/popup-closed-by-user") {
-        throw new Error("Google sign-in popup was closed before completing.");
+      if (error?.code === "auth/popup-blocked" || error?.code === "auth/operation-not-supported-in-this-environment") {
+        await signInWithRedirect(auth, googleProvider);
+        // The browser is now leaving for Google; onAuthStateChanged finishes the sign-in on return.
+        return new Promise<User>(() => {});
       }
-
-      // If domain is not authorized (e.g. mobile IP, localtunnel) or network blocks popup:
-      // Gracefully authenticate user without showing configuration errors
-      if (
-        error.code === "auth/unauthorized-domain" ||
-        error.code === "auth/operation-not-allowed" ||
-        error.code === "auth/invalid-api-key" ||
-        error.code === "auth/api-key-not-valid" ||
-        error.code === "auth/internal-error" ||
-        error.code === "auth/network-request-failed" ||
-        error.code === "auth/cancelled-popup-request"
-      ) {
-        return await syncBackendUser({
-          uid: "google_mobile_" + Date.now(),
-          email: "member@glamgrid.com",
-          displayName: "GlamGrid Member",
-          photoURL: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-          provider: "google",
-        });
-      }
-
-      throw new Error(error.message || "Failed to sign in with Google.");
+      throw new Error(googleErrorMessage(error?.code));
     }
-
-    // Fallback if not configured
-    return await syncBackendUser({
-      uid: "google_user_" + Date.now(),
-      email: "member@glamgrid.com",
-      displayName: "GlamGrid Member",
-      photoURL: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+    const fbUser = result.user;
+    return syncBackendUser({
+      uid: fbUser.uid,
+      email: fbUser.email || "",
+      displayName: fbUser.displayName || "",
+      photoURL: fbUser.photoURL || undefined,
       provider: "google",
     });
   }
