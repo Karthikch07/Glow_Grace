@@ -25,7 +25,15 @@ app.use((req, res, next) => {
   next();
 });
 
-(async () => {
+// On Vercel each request runs this module as a serverless function: export a handler
+// instead of listening. Vercel serves the built client itself (vercel.json routes).
+const ready = process.env.VERCEL ? registerRoutes(app) : null;
+export default async function handler(req: express.Request, res: express.Response) {
+  await ready;
+  app(req, res);
+}
+
+if (!process.env.VERCEL) (async () => {
   const server = await registerRoutes(app);
 
   if (app.get("env") === "development") {
